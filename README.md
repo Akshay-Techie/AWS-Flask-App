@@ -949,8 +949,7 @@ This project is licensed under the MIT License — see LICENSE file for details.
 
 ## 👤 Author
 
-**Akshay** - MLOps Architect  
-Portfolio: [Your Portfolio URL]
+**Akshay** - Future MLOps Architect 
 
 ---
 
