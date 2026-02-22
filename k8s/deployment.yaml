@@ -9,7 +9,7 @@ metadata:
   annotations:
     description: "Flask web application deployment on EKS"
 spec:
-  replicas: 2
+  replicas: 1
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -37,7 +37,7 @@ spec:
       containers:
       - name: project03-app
         # Image will be updated by Jenkins pipeline
-        image: ACCOUNT_ID.dkr.ecr.ap-south-1.amazonaws.com/project03-flask-app:latest
+        image: 793433927733.dkr.ecr.ap-south-1.amazonaws.com/project03-app:01
         imagePullPolicy: Always
         
         ports:
