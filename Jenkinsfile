@@ -2,53 +2,90 @@ pipeline {
     agent any
 
     environment {
+        // AWS region where all resources are deployed
         AWS_REGION = 'ap-south-1'
+
+        // AWS credentials from Jenkins credentials store
+        AWS_ACCESS_KEY_ID     = credentials('AWS_ACCESS_KEY_ID')
+        AWS_SECRET_ACCESS_KEY = credentials('AWS_SECRET_ACCESS_KEY')
+
+        // Your AWS account ID — add this in Jenkins credentials as Secret text
         AWS_ACCOUNT_ID = credentials('AWS_ACCOUNT_ID')
+
+        // ECR registry URL — built from account ID and region
         ECR_REGISTRY = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
-        ECR_REPO_NAME = 'project03-flask-app'
+
+        // ECR repository name — must match what you created
+        ECR_REPO_NAME = 'project03-app'
+
+        // Image tag = Jenkins build number (e.g. 1, 2, 3)
+        // Every build gets a unique tag
         IMAGE_TAG = "${BUILD_NUMBER}"
+
+        // EKS cluster name — must match cluster.tf
         EKS_CLUSTER_NAME = 'project03-cluster'
+
+        // Kubernetes namespace where app is deployed
         K8S_NAMESPACE = 'default'
     }
 
     stages {
+
+        // ─────────────────────────────────────────
+        // Stage 1 — Pull latest code from GitHub
+        // ─────────────────────────────────────────
         stage('Checkout Code') {
             steps {
                 echo '===== Pulling code from GitHub ====='
+
+                // checkout scm = pulls code from the repo
+                // configured in Jenkins pipeline settings
                 checkout scm
-                echo "✓ Code checked out successfully"
+
+                echo '✓ Code checked out successfully'
             }
         }
 
+        // ─────────────────────────────────────────
+        // Stage 2 — Build Docker image
+        // ─────────────────────────────────────────
         stage('Build Docker Image') {
             steps {
                 echo '===== Building Docker image ====='
                 script {
                     sh '''
-                        echo "Building Docker image: ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG}"
+                        echo "Building image: ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG}"
+
+                        # build image with build number tag
                         docker build -t ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG} .
+
+                        # also tag as latest for easy reference
                         docker tag ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG} \
-                                  ${ECR_REGISTRY}/${ECR_REPO_NAME}:latest
-                        
-                        # List built images
+                                   ${ECR_REGISTRY}/${ECR_REPO_NAME}:latest
+
+                        # verify image was built
                         docker images | grep project03
                     '''
                 }
-                echo "✓ Docker image built successfully"
+                echo '✓ Docker image built successfully'
             }
         }
 
+        // ─────────────────────────────────────────
+        // Stage 3 — Push image to Amazon ECR
+        // ─────────────────────────────────────────
         stage('Push to ECR') {
             steps {
                 echo '===== Pushing image to Amazon ECR ====='
                 script {
                     sh '''
-                        # Login to ECR
-                        echo "Logging into ECR: ${ECR_REGISTRY}"
+                        # login to ECR — token valid for 12 hours
+                        echo "Logging into ECR..."
                         aws ecr get-login-password --region ${AWS_REGION} | \
                         docker login --username AWS --password-stdin ${ECR_REGISTRY}
-                        
-                        # Create ECR repository if not exists
+
+                        # create ECR repo if it doesnt exist already
+                        # || true means dont fail if it already exists
                         echo "Creating ECR repository if not exists..."
                         aws ecr describe-repositories \
                             --repository-names ${ECR_REPO_NAME} \
@@ -56,69 +93,76 @@ pipeline {
                         aws ecr create-repository \
                             --repository-name ${ECR_REPO_NAME} \
                             --region ${AWS_REGION}
-                        
-                        # Push images
-                        echo "Pushing image with tag: ${IMAGE_TAG}"
+
+                        # push image with build number tag
+                        echo "Pushing image tag: ${IMAGE_TAG}"
                         docker push ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG}
-                        echo "Pushing image with tag: latest"
+
+                        # push image with latest tag
+                        echo "Pushing image tag: latest"
                         docker push ${ECR_REGISTRY}/${ECR_REPO_NAME}:latest
-                        
-                        # List images in ECR
-                        aws ecr describe-images --repository-name ${ECR_REPO_NAME} --region ${AWS_REGION}
                     '''
                 }
-                echo "✓ Image pushed to ECR successfully"
+                echo '✓ Image pushed to ECR successfully'
             }
         }
 
+        // ─────────────────────────────────────────
+        // Stage 4 — Connect kubectl to EKS cluster
+        // ─────────────────────────────────────────
         stage('Update kubeconfig') {
             steps {
                 echo '===== Configuring kubectl for EKS cluster ====='
                 script {
                     sh '''
-                        echo "Updating kubeconfig for cluster: ${EKS_CLUSTER_NAME}"
+                        # update kubeconfig so kubectl points to EKS
                         aws eks update-kubeconfig \
                             --name ${EKS_CLUSTER_NAME} \
                             --region ${AWS_REGION}
-                        
-                        # Verify connection
+
+                        # verify kubectl can reach the cluster
                         kubectl cluster-info
                         kubectl get nodes
                     '''
                 }
-                echo "✓ kubeconfig updated successfully"
+                echo '✓ kubeconfig updated successfully'
             }
         }
 
+        // ─────────────────────────────────────────
+        // Stage 5 — Deploy app to EKS
+        // ─────────────────────────────────────────
         stage('Deploy to EKS') {
             steps {
                 echo '===== Deploying to EKS cluster ====='
                 script {
                     sh '''
-                        # Create namespace if not exists
-                        echo "Creating namespace: ${K8S_NAMESPACE}"
-                        kubectl create namespace ${K8S_NAMESPACE} || true
-                        
-                        # Apply Kubernetes manifests
+                        # apply all yaml files inside k8s/ folder
+                        # deployment.yaml + service.yaml + configmap.yaml
                         echo "Applying Kubernetes manifests..."
                         kubectl apply -f k8s/ -n ${K8S_NAMESPACE}
-                        
-                        # Update image in deployment
-                        echo "Updating deployment image to: ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG}"
+
+                        # update deployment with new image tag
+                        # this triggers a rolling update in Kubernetes
+                        echo "Updating image to: ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG}"
                         kubectl set image deployment/project03-app \
                             project03-app=${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG} \
                             -n ${K8S_NAMESPACE} || true
-                        
-                        # Wait for rollout to complete (timeout: 5 minutes)
-                        echo "Waiting for rollout to complete..."
+
+                        # wait max 5 minutes for rollout to finish
+                        # fails pipeline if pods dont come up in time
+                        echo "Waiting for rollout..."
                         kubectl rollout status deployment/project03-app \
                             -n ${K8S_NAMESPACE} --timeout=5m
                     '''
                 }
-                echo "✓ Deployment to EKS successful"
+                echo '✓ Deployment to EKS successful'
             }
         }
 
+        // ─────────────────────────────────────────
+        // Stage 6 — Verify deployment is healthy
+        // ─────────────────────────────────────────
         stage('Verify Deployment') {
             steps {
                 echo '===== Verifying EKS Deployment ====='
@@ -126,82 +170,94 @@ pipeline {
                     sh '''
                         echo "========== POD STATUS =========="
                         kubectl get pods -n ${K8S_NAMESPACE}
-                        
-                        echo ""
+
                         echo "========== SERVICES =========="
                         kubectl get svc -n ${K8S_NAMESPACE}
-                        
-                        echo ""
-                        echo "========== DEPLOYMENT STATUS =========="
-                        kubectl describe deployment project03-app -n ${K8S_NAMESPACE}
-                        
-                        echo ""
-                        echo "========== SERVICE ENDPOINT =========="
-                        kubectl get svc project03-service -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' || echo "LoadBalancer IP not yet assigned"
+
+                        echo "========== LOAD BALANCER URL =========="
+                        # get external URL of the app
+                        kubectl get svc project03-service \
+                            -n ${K8S_NAMESPACE} \
+                            -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' \
+                            || echo "LoadBalancer IP not yet assigned"
                     '''
                 }
-                echo "✓ Verification complete"
+                echo '✓ Verification complete'
             }
         }
 
+        // ─────────────────────────────────────────
+        // Stage 7 — Show recent app logs
+        // Note: removed -f flag to prevent pipeline hanging
+        // ─────────────────────────────────────────
         stage('View Application Logs') {
             steps {
                 echo '===== Recent Application Logs ====='
                 script {
                     sh '''
-                        echo "Fetching logs from deployment (last 50 lines)..."
-                        kubectl logs -f deployment/project03-app -n ${K8S_NAMESPACE} --tail=50 --timestamps=true || echo "No logs available yet"
+                        # --tail=50 = show last 50 lines only
+                        # removed -f flag — -f follows logs forever
+                        # and would hang the pipeline ❌
+                        kubectl logs deployment/project03-app \
+                            -n ${K8S_NAMESPACE} \
+                            --tail=50 \
+                            --timestamps=true \
+                            || echo "No logs available yet"
                     '''
                 }
             }
         }
     }
 
+    // ─────────────────────────────────────────
+    // Post actions — run after all stages
+    // ─────────────────────────────────────────
     post {
+
+        // runs only if all stages passed
         success {
             echo '''
-            ╔═══════════════════════════════════════════════════════╗
-            ║  ✅ PIPELINE EXECUTED SUCCESSFULLY!                   ║
-            ╚═══════════════════════════════════════════════════════╝
+            ✅ PIPELINE EXECUTED SUCCESSFULLY!
             
-            📊 Deployment Summary:
-            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            🐳 Docker Image: ${ECR_REGISTRY}/${ECR_REPO_NAME}:${IMAGE_TAG}
-            ☸️  Cluster: ${EKS_CLUSTER_NAME} (${AWS_REGION})
-            📦 Namespace: ${K8S_NAMESPACE}
-            🔗 Build Number: ${BUILD_NUMBER}
-            
-            📈 Next Steps:
-            1. Get Load Balancer URL:
-               kubectl get svc project03-service -n ${K8S_NAMESPACE}
-            2. View logs:
-               kubectl logs -f deployment/project03-app -n ${K8S_NAMESPACE}
-            3. Access application:
-               http://<LOAD_BALANCER_URL>
+            Image: ${ECR_REPO_NAME}:${IMAGE_TAG}
+            Cluster: ${EKS_CLUSTER_NAME}
+            Namespace: ${K8S_NAMESPACE}
+            Build: ${BUILD_NUMBER}
             '''
         }
+
+        // runs only if any stage failed
         failure {
             echo '''
-            ╔═══════════════════════════════════════════════════════╗
-            ║  ❌ PIPELINE FAILED!                                  ║
-            ╚═══════════════════════════════════════════════════════╝
+            ❌ PIPELINE FAILED!
             
-            🔍 Troubleshooting Steps:
-            ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-            1. Check Console Output above for error details
-            2. Common issues:
-               • Docker build failed: Check Dockerfile syntax
-               • ECR push failed: Verify AWS credentials & permissions
-               • EKS deploy failed: Check kubeconfig, IAM roles
-               • Image pull failed: Check ECR image exists
-            3. Manual verification:
-               aws ecr describe-images --repository-name project03-flask-app
-               kubectl get events -n ${K8S_NAMESPACE}
+            Check Console Output for errors.
+            Common issues:
+            1. Docker build failed  → check Dockerfile
+            2. ECR push failed      → check AWS credentials
+            3. EKS deploy failed    → check kubeconfig + IAM roles
+            4. Image pull failed    → check ECR image exists
             '''
         }
+
+        // always runs — success or failure
         always {
-            echo '🧹 Cleaning up workspace...'
+            // clean workspace after every build
+            // frees up disk space on Jenkins VM
+            echo 'Cleaning up workspace...'
             deleteDir()
         }
     }
 }
+```
+
+---
+
+## One more thing — add `AWS_ACCOUNT_ID` in Jenkins credentials:
+```
+Jenkins → Manage Jenkins → Credentials
+→ Add Credentials
+→ Kind: Secret text
+→ ID: AWS_ACCOUNT_ID
+→ Secret: 793433927733
+→ Create ✅
