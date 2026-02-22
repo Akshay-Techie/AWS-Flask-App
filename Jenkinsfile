@@ -249,15 +249,3 @@ pipeline {
         }
     }
 }
-```
-
----
-
-## One more thing — add `AWS_ACCOUNT_ID` in Jenkins credentials:
-```
-Jenkins → Manage Jenkins → Credentials
-→ Add Credentials
-→ Kind: Secret text
-→ ID: AWS_ACCOUNT_ID
-→ Secret: 793433927733
-→ Create ✅
