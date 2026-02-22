@@ -21,7 +21,7 @@ spec:
     name: http
   
   # Session affinity
-  sessionAffinity: ClientIP
+  sessionAffinity: None
   sessionAffinityConfig:
     clientIP:
       timeoutSeconds: 10800
