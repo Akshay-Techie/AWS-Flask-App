@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: project03-config
+  namespace: default
+  labels:
+    app: project03
+  annotations:
+    description: "Configuration for Flask application"
+data:
+  # Flask configuration
+  FLASK_ENV: "production"
+  LOG_LEVEL: "INFO"
+  
+  # Application settings
+  DEBUG: "False"
+  WORKERS: "4"
+  
+  # Logging configuration
+  LOG_FORMAT: "json"
+  LOG_OUTPUT: "stdout"
+  
+  # Monitoring
+  METRICS_ENABLED: "true"
+  HEALTH_CHECK_ENABLED: "true"
